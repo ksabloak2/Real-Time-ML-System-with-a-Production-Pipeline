@@ -1,0 +1,25 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Model cache
+.cache/
+huggingface/
+
+# Database
+*.db
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
