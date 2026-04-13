@@ -1,21 +1,19 @@
 """
-Reddit ingestion worker.
+Reddit ingestion worker — no API credentials required.
 
-Polls a subreddit every POLL_INTERVAL seconds, runs sentiment inference
-on new post titles, and writes results to the database.
+Uses Reddit's public JSON feed (reddit.com/r/<subreddit>/new.json)
+which is freely accessible with just a User-Agent header.
 
-Environment variables required:
-  REDDIT_CLIENT_ID
-  REDDIT_CLIENT_SECRET
-  REDDIT_USER_AGENT   (e.g. "sentiment-bot/1.0 by u/yourname")
-  REDDIT_SUBREDDIT    (default: "worldnews")
-  POLL_INTERVAL       (default: 60 seconds)
+Environment variables (all optional):
+  REDDIT_SUBREDDIT    subreddit to poll, default "worldnews"
+  POLL_INTERVAL       seconds between polls, default 60
 """
 import os
 import time
 import logging
 import threading
-import praw
+
+import requests
 
 from app.model import predict
 from app.database import insert_prediction, insert_ingestion_run
@@ -26,34 +24,35 @@ _seen_ids: set[str] = set()
 _worker_thread: threading.Thread | None = None
 _running = False
 
-
-def _build_reddit_client() -> praw.Reddit:
-    return praw.Reddit(
-        client_id=os.environ["REDDIT_CLIENT_ID"],
-        client_secret=os.environ["REDDIT_CLIENT_SECRET"],
-        user_agent=os.getenv("REDDIT_USER_AGENT", "sentiment-bot/1.0"),
-        read_only=True,
-    )
+HEADERS = {"User-Agent": "sentiment-bot/1.0 (personal ML project)"}
 
 
-def _poll_once(reddit: praw.Reddit, subreddit_name: str) -> int:
-    subreddit = reddit.subreddit(subreddit_name)
+def _fetch_posts(subreddit_name: str) -> list[dict]:
+    url = f"https://www.reddit.com/r/{subreddit_name}/new.json?limit=25"
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+    resp.raise_for_status()
+    return resp.json()["data"]["children"]
+
+
+def _poll_once(subreddit_name: str) -> int:
+    posts = _fetch_posts(subreddit_name)
     new_posts = []
-    for submission in subreddit.new(limit=25):
-        if submission.id not in _seen_ids:
-            _seen_ids.add(submission.id)
-            new_posts.append(submission)
+    for child in posts:
+        post = child["data"]
+        if post["id"] not in _seen_ids:
+            _seen_ids.add(post["id"])
+            new_posts.append(post)
 
     for post in new_posts:
-        result = predict(post.title)
+        result = predict(post["title"])
         insert_prediction(
             source=f"reddit/r/{subreddit_name}",
-            text=post.title,
+            text=post["title"],
             label=result["label"],
             score=result["score"],
             latency_ms=result["latency_ms"],
         )
-        logger.debug(f"[{result['label']} {result['score']:.2f}] {post.title[:80]}")
+        logger.debug(f"[{result['label']} {result['score']:.2f}] {post['title'][:80]}")
 
     if new_posts:
         insert_ingestion_run(subreddit_name, len(new_posts))
@@ -64,11 +63,10 @@ def _poll_once(reddit: praw.Reddit, subreddit_name: str) -> int:
 
 def _worker_loop(subreddit_name: str, poll_interval: int):
     global _running
-    reddit = _build_reddit_client()
     logger.info(f"Ingestion worker started — polling r/{subreddit_name} every {poll_interval}s")
     while _running:
         try:
-            _poll_once(reddit, subreddit_name)
+            _poll_once(subreddit_name)
         except Exception as e:
             logger.error(f"Ingestion error: {e}")
         time.sleep(poll_interval)

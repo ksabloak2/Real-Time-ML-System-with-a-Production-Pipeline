@@ -26,24 +26,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-REDDIT_ENABLED = all(
-    os.getenv(k) for k in ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"]
-)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    if REDDIT_ENABLED:
-        from app.ingestion import start_worker
-        start_worker()
-        logger.info("Reddit ingestion worker started")
-    else:
-        logger.info("Reddit credentials not set — ingestion worker disabled")
+    from app.ingestion import start_worker
+    start_worker()
+    logger.info("Reddit ingestion worker started")
     yield
-    if REDDIT_ENABLED:
-        from app.ingestion import stop_worker
-        stop_worker()
+    from app.ingestion import stop_worker
+    stop_worker()
 
 
 app = FastAPI(
